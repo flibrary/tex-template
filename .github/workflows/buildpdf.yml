@@ -1,0 +1,82 @@
+name: "Build updated PDF"
+on:
+  push:
+  schedule:
+    - cron: '0 1 * * 1'
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    outputs:
+      date: ${{ steps.current_time.outputs.formattedTime }}
+      log-num: ${{ steps.get_log.outputs.log-num }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Get current time
+        uses: 1466587594/get-current-time@v2
+        id: current_time
+        with:
+          format: YYYYMMDD_HHmm
+          utcOffset: "+08:00"
+      - name: Get log
+        id: get_log
+        run: |
+          echo "::set-output name=log-num::$(git --no-pager log --since yesterday --pretty=format:%h%x09%an%x09%ad%x09%s --date short | grep -c '')"
+      - name: Create release
+        id: create_release
+        if: ${{steps.get_log.outputs.log-num > 0}}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: build-${{ steps.current_time.outputs.formattedTime }}
+          release_name: Automated build ${{ steps.current_time.outputs.formattedTime }}
+
+  buildpdf:
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ["placeholder"]
+    if: (needs.create-release.outputs.log-num > 0)
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        # Nix Flakes doesn't work on shallow clones
+        fetch-depth: 0
+    - name: Install nix
+      uses: cachix/install-nix-action@v16
+    - uses: cachix/cachix-action@v8
+      with:
+        name: flibrary
+        authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+    - name: Build PDF
+      id: pdf
+      run: |
+        nix build .#${{ matrix.name }}
+        cp result/${{ matrix.name }}.pdf .
+    - name: Upload Release Asset
+      id: upload-release-asset
+      uses: softprops/action-gh-release@v1
+      with:
+        files: '${{ matrix.name }}.pdf'
+        tag_name: build-${{ needs.create-release.outputs.date }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  remove-release:
+    name: Clean up release(s)
+    needs: buildpdf
+    runs-on: ubuntu-latest
+    steps:
+    - name: Clean-up releases
+      uses: dev-drprasad/delete-older-releases@v0.1.0
+      with:
+        keep_latest: 14
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
